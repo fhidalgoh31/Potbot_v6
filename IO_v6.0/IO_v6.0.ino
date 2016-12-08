@@ -31,12 +31,13 @@ SoftwareSerial gps_serial(RX_GPS, TX_GPS); // RX, TX   // GPS  12 13
 SoftwareSerial ol_serial(RX_OL, TX_OL); // RX, TX   // OL
 //time
 TinyGPS gps;
-byte ol_status=0;
+byte ol_status=0;   //0 nothing    1 CMD mode    2 Append
 bool first;
 bool screen=0;
 bool logger=0;
 static bool gps_write=0;
 char gps_thresh=0;
+float latitude, longitude, temperature;
 byte state=0;    // 1: in air    3: deployed    5: in water    7: recovered
 //dummy    ,Video_time [min], temp_freq [min], acc_threshold [%], GPS_time out [min]
 byte parameters[5]={0,15,60,20,5};
@@ -54,7 +55,7 @@ int get_acc_threshold(bool serial_print);
 int sequence();
 void ol_timestamp();
 void ol_printDigits(char separator, int digits);
-
+void ol_logevent(int event);
 //Accelerometer config
 /* Assign a unique ID to this sensor at the same time */
 Adafruit_LSM303_Accel_Unified accel = Adafruit_LSM303_Accel_Unified(54321);
@@ -75,6 +76,8 @@ void setup()
   pinMode(LED, OUTPUT);
   pinMode(I_HUM, INPUT);
 
+  digitalWrite(SW_ACC, LOW);
+  
   gps_serial.begin(4800); 
   ol_serial.begin(4800);
   delay (1000);
@@ -96,13 +99,11 @@ void setup()
   }
    /* Enable auto-gain  Magnetometer*/
   mag.enableAutoRange(true);
+  ol_logevent(0);
 }
 
 void loop() {
   char data;
-  digitalWrite(LED, LOW);
-
-    
     
   if (screen)                        // OPENLONG SCREEN INTERFACE
        {  if (ol_serial.available()) {
@@ -128,9 +129,6 @@ void loop() {
   }   
   //state=1;
   sequence();
-  pinMode(TX_GPS, OUTPUT);
-  digitalWrite(TX_GPS,HIGH);
-  
 }
 
 
@@ -200,7 +198,7 @@ float read_temp(int *val, int *frac){
   Serial.print("\n");
 
   delay(50);
-  digitalWrite(SW_TOL, LOW);
+  digitalWrite(SW_TOL, HIGH);  //LOW
   digitalWrite(LED, LOW);
   return temperature;
 }
@@ -285,13 +283,18 @@ int command(char data){
       Serial.print(digitalRead(SW_TOL),DEC);
       Serial.print("  Temp & Open log\n");
     int val, frac;
-      read_temp( &val, &frac);
+      temperature=read_temp( &val, &frac);
       
       break;
 
+    case 'T': 
+      digitalWrite(SW_TOL, LOW);
+      Serial.print(digitalRead(SW_TOL),DEC);
+      Serial.print(" LOGGER OFF \n");
+      break;
+
     case 'o': 
-      
-      ol_cmd();
+      //ol_cmd();
       break;
 
     case 'g': 
@@ -333,23 +336,27 @@ int command(char data){
       
       delay(1000);
       Serial.print("finish writing\n");
-      digitalWrite(SW_TOL, LOW);
+      digitalWrite(SW_TOL, LOW);  
 
       break;
 
      case 's':                                   //screen
+     digitalWrite(SW_TOL, HIGH);
+     ol_serial.listen();
+     ol_status=0;
+     ol_cmd();
      state=100;
      screen=1;
-     ol_serial.listen();
-     digitalWrite(SW_TOL, HIGH);
-     ol_cmd();
+     
+     
+     
      break;
 
 
      case 'l':                                   //log
      state=100;
      digitalWrite(SW_TOL, HIGH);
-     digitalWrite(SW_ACC, HIGH);
+     digitalWrite(SW_ACC, LOW);
      delay(500);
       Serial.print("  Logger: ");
       Serial.print(!logger,DEC);
@@ -430,14 +437,44 @@ void printDigits(int digits){
 
 void ol_timestamp(){
   // digital clock display of the time
+  delay(50);
   ol_printDigits(0,day());
+  delay(50);
   ol_printDigits('/',month());
+  delay(50);
   ol_printDigits('/',year());
+  delay(50);
   ol_printDigits(';',hour());
+  delay(50);
   ol_printDigits(':',minute());
+  delay(50);
   ol_printDigits(':',second());
+  delay(50);
   ol_serial.print(';'); 
 }
+
+
+// logs event timestamp and position
+void ol_logevent(int event)
+{
+      delay(100);
+      ol_timestamp();
+      delay(100);
+      ol_serial.print("E");
+      ol_serial.print(event);
+      ol_serial.print(";");
+      delay(20);
+      ol_serial.print(latitude,6);
+      delay(20);
+      ol_serial.print(';');
+      ol_serial.print(longitude,6);
+      delay(20);
+      ol_serial.print(';');
+      delay(20);
+      ol_serial.print(temperature,3);
+      ol_serial.println("");
+}
+
 
 // separator = 0 --> doesn't print
 void ol_printDigits(char separator, int digits){
@@ -445,9 +482,9 @@ void ol_printDigits(char separator, int digits){
   if (separator) ol_serial.write(separator);
   if(digits < 10)
     ol_serial.print('0');
+  delay(10);
   ol_serial.print(digits);
 }
-
 
 int ol_cmd(){
 if (!ol_status)
@@ -455,18 +492,20 @@ if (!ol_status)
   char temp;
   digitalWrite(SW_TOL, HIGH);
   Serial.print(digitalRead(SW_TOL),DEC);
-  Serial.print("  Temp & Open log\n");
+  Serial.print("Open command mode\n");
   ol_serial.listen();
-  delay(100);
-  for (int i=0; i<100 ; i++){
+  delay(50);
+  for (int i=0; i<51 ; i++){
       delay(5);
       ol_serial.write(26);
-      delay(5);
+      ol_serial.write(26);
+      ol_serial.write(26);
+      delay(10);
       for (int z=0; z<10 ; z++)
         if (ol_serial.available())
           //Serial.println(ol_serial.read());
           if(ol_serial.read()=='>')
-          { Serial.print("try: "); Serial.print(i, DEC); Serial.println(">");   delay(20); 
+          { Serial.print("attempt: "); Serial.print(i, DEC); Serial.println(">");   delay(5); 
             ol_serial.println("");
             for (int j=0; j<200; j++)          //flush
               if (ol_serial.available())
@@ -476,28 +515,36 @@ if (!ol_status)
             delay(5);
             Serial.println("");
             Serial.println("OL CMD_MODE");
+            ol_status=1; 
             return 1;
           }
         delay(5);
-        if (i>=99) { Serial.println("error openlong cmd"); return 0;}
+        if (i>=50) { Serial.println("error openlong cmd"); return 0;}
       }
-     ol_status=1; 
     }
 } 
 
 
 int ol_append(){
-  if (ol_status!=2)
+//  digitalWrite(SW_TOL, HIGH);
+//  ol_serial.listen();
+//   for (int z=0; z<10 ; z++)
+//   if (ol_serial.available())
+//          //Serial.println(ol_serial.read());
+//          if(ol_serial.read()=='>' || ol_serial.read()=='<')
+//            {ol_status=0; Serial.println("Openlong back to CMD");}
+  /*if (ol_status!=2)
   {
       ol_cmd();
       ol_serial.println("");
       delay(10);
-      ol_serial.println("append log.txt");
+      ol_serial.print("append log.txt");
+      ol_serial.write(13);
       delay(10);
       Serial.println("Openlong ready");
       ol_status=2;
       return 1;
-  }
+  }*/
 }
 int ol_potbot_parameters(){
   int  par_index=0;  
@@ -510,7 +557,7 @@ int ol_potbot_parameters(){
     if (ol_serial.available()) 
     {
       character= ol_serial.read(); //Serial.write(character);
-      if (character=='.') {Serial.println("parameters loaded");digitalWrite(SW_TOL, LOW);return 1; break;}
+      if (character=='.') {Serial.println("parameters loaded");  ol_serial.println("reset"); digitalWrite(SW_TOL, LOW);return 1; break;}   //LOW
         if ((character>= '0') &&  (character<= '9'))
           temp= temp*10 + character - '0';
         else if (character==',')
@@ -540,10 +587,12 @@ int sequence(){
     if (get_acc_threshold(0))       // wait acc
     {  Serial.print("wait for gps...");
     state++;
-  }
+    }
+    delay (50);
   break;
 
   case 1:
+    ol_logevent(2);
     temp1=now() + 60*parameters[4];    // gps time
     temp2=now() + 60*parameters[1];    // camera time
     command('g');   //start gps
@@ -552,17 +601,18 @@ int sequence(){
   break;
   
   case 2:               // wait for gps
-    float latitude, longitude;
     if (get_gps(&latitude, &longitude))
     {
       temp1=now() + 60*parameters[4];    // gps time
       temp2=now() + 60*parameters[1];    // camera time
       Serial.print("check deployment...");
-    state++;
+      ol_logevent(3);
+      state++;
     } 
     
     else if (now()>temp1)     //gps time
     {
+      ol_logevent(4);
       state++;        //to never got signal
     }
   break;
@@ -570,13 +620,9 @@ int sequence(){
    case 3:           //turn off GPS if not recieving info in 1 sec, save last gps position after get into water
     if  (!(get_gps(&latitude, &longitude)))
     {
-      ol_append();
-      ol_timestamp();
-      ol_serial.print("deployed;");
-      ol_serial.print(latitude,6);
-    ol_serial.print(';');
-      ol_serial.print(longitude,6);
-      ol_serial.println("");
+      delay(100);
+      ol_logevent(5);
+      delay(100);
       command('G'); //turn off gps
       temp1=now() + 60*parameters[2];   // set time for temperature
       Serial.print("In water... monitor temp");
@@ -598,14 +644,10 @@ int sequence(){
       
     if  (now()>temp1)     //read temperature every temp time
     {
-      ol_append();
-      ol_timestamp();
-      ol_serial.print("temperature;;;");
-      read_temp(&val,&frac);
-    ol_serial.print(val);
-    ol_serial.print(".");
-    ol_serial.print(frac);
-      ol_serial.println("");
+      temperature=read_temp(&val,&frac);
+      delay(100);
+      ol_logevent(6);
+      delay(100);
       temp1=now() + 60*parameters[2];   // set new time for temperature
     }
     
@@ -691,7 +733,6 @@ int get_acc_threshold(bool serial_print){
   float acc_new[3];
   byte acc_ch[3]={A0,A1,A2};
 
-   digitalWrite(SW_ACC, HIGH);
    delay(5);
   for (int i=0; i<3;i++)
   {accel.getEvent(&event); delay(5);}
