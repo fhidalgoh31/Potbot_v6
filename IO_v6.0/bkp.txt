@@ -133,8 +133,8 @@ void loop() {
 
 
 float read_temp(int *val, int *frac){
-   float temperature;
-  /*digitalWrite(SW_TOL, HIGH);
+  float temperature;
+  digitalWrite(SW_TOL, HIGH);
   digitalWrite(LED, HIGH);
   Serial.print("TEMP ON \n");  //ZZZ delete
   delay(10);
@@ -199,7 +199,7 @@ float read_temp(int *val, int *frac){
 
   delay(50);
   digitalWrite(SW_TOL, HIGH);  //LOW
-  digitalWrite(LED, LOW); */
+  digitalWrite(LED, LOW);
   return temperature;
 }
 
@@ -231,8 +231,6 @@ void log_acc(){
 // latitude and longitude as floats
 int get_gps(float *latitude, float *longitude)
 {
-	gps_serial.listen();
-	Serial.println("GPS Start");
    extern bool gps_write;
    bool newData = false;
    int year;
@@ -244,9 +242,8 @@ int get_gps(float *latitude, float *longitude)
    {
      while (gps_serial.available())
      {
-	 char c = gps_serial.read();
-	  //delay(50);
-	  Serial.print(c); // uncomment this line if you want to see the GPS data flowing
+     char c = gps_serial.read();
+     // Serial.write(c); // uncomment this line if you want to see the GPS data flowing
      if (gps.encode(c)) // Did a new valid sentence come in?
      {
       newData = true;
@@ -254,7 +251,6 @@ int get_gps(float *latitude, float *longitude)
      }
      }
    }
-   Serial.println("Timed out");
 
    if (newData && gps_thresh>GPS_THRESHOLD) // threshold # of good sentences
    {
@@ -265,7 +261,6 @@ int get_gps(float *latitude, float *longitude)
   setTime(hour,minutes,second,day,month,year);
   setTime(now()+28800);
   gps_thresh=0;
-  //Serial.println("Lat: %f %f",latitude,longitude);
   Serial.println("GPS received");
   return 1;
    }

@@ -104,8 +104,9 @@ void setup()
 
 void loop() {
   char data;
-    
-  if (screen)                        // OPENLONG SCREEN INTERFACE
+        digitalWrite(SW_GPS, HIGH);
+    get_gps(&latitude, &longitude);
+/*   if (screen)                        // OPENLONG SCREEN INTERFACE
        {  if (ol_serial.available()) {
         Serial.write(ol_serial.read());
         }
@@ -128,13 +129,13 @@ void loop() {
     log_acc();
   }   
   //state=1;
-  sequence();
+  sequence(); */
 }
 
 
 float read_temp(int *val, int *frac){
-   float temperature;
-  /*digitalWrite(SW_TOL, HIGH);
+  float temperature;
+  digitalWrite(SW_TOL, HIGH);
   digitalWrite(LED, HIGH);
   Serial.print("TEMP ON \n");  //ZZZ delete
   delay(10);
@@ -199,7 +200,7 @@ float read_temp(int *val, int *frac){
 
   delay(50);
   digitalWrite(SW_TOL, HIGH);  //LOW
-  digitalWrite(LED, LOW); */
+  digitalWrite(LED, LOW);
   return temperature;
 }
 
@@ -244,9 +245,8 @@ int get_gps(float *latitude, float *longitude)
    {
      while (gps_serial.available())
      {
-	 char c = gps_serial.read();
-	  //delay(50);
-	  Serial.print(c); // uncomment this line if you want to see the GPS data flowing
+     char c = gps_serial.read();
+     // Serial.write(c); // uncomment this line if you want to see the GPS data flowing
      if (gps.encode(c)) // Did a new valid sentence come in?
      {
       newData = true;
