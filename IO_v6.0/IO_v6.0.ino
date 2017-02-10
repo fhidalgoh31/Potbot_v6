@@ -9,6 +9,9 @@
 #include <TinyGPS.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_LSM303_U.h>
+#include <avr/wdt.h>
+#include <avr/sleep.h>
+#include <avr/interrupt.h>
 
 
 #define EEPROM_addrs  1
@@ -16,13 +19,16 @@
 #define SW_TOL  3
 #define SW_GPS  4
 #define SW_CAM  5
-#define VI_ACC  A1
+// #define VI_ACC  A1
 #define TX_GPS  13
 #define RX_GPS  12
 #define RX_OL  11
 #define TX_OL  10
 #define LED  13
-#define I_HUM  A3
+#define I_VBUS  A3
+#define I_CH1  A2
+// A2 Not used
+#define I_HUM  A0
 #define temp_add 72
 #define GPS_THRESHOLD 3
 #define ACC_OFFSET 15000 // all positives values
@@ -32,15 +38,15 @@ SoftwareSerial ol_serial(RX_OL, TX_OL); // RX, TX   // OL
 //time
 TinyGPS gps;
 byte ol_status=0;   //0 nothing    1 CMD mode    2 Append
-bool first;
 bool screen=0;
 bool logger=0;
-static bool gps_write=0;
 char gps_thresh=0;
 float latitude, longitude, temperature;
 byte state=0;    // 1: in air    3: deployed    5: in water    7: recovered
 //dummy    ,Video_time [min], temp_freq [min], acc_threshold [%], GPS_time out [min]
 byte parameters[5]={0,15,60,20,5};
+Adafruit_LSM303_Accel_Unified accel = Adafruit_LSM303_Accel_Unified(54321);
+
 
 float read_temp(int *val, int *frac);
 void log_acc();
@@ -56,10 +62,9 @@ int sequence();
 void ol_timestamp();
 void ol_printDigits(char separator, int digits);
 void ol_logevent(int event);
+void myWatchdogEnable(int select_time);
 //Accelerometer config
 /* Assign a unique ID to this sensor at the same time */
-Adafruit_LSM303_Accel_Unified accel = Adafruit_LSM303_Accel_Unified(54321);
-Adafruit_LSM303_Mag_Unified mag = Adafruit_LSM303_Mag_Unified(12345);
 
 void setup()
 {
@@ -72,9 +77,10 @@ void setup()
   pinMode(SW_TOL, OUTPUT);
   pinMode(SW_GPS, OUTPUT);
   pinMode(SW_CAM, OUTPUT);
-  pinMode(VI_ACC, INPUT);
   pinMode(LED, OUTPUT);
   pinMode(I_HUM, INPUT);
+  pinMode(I_VBUS, OUTPUT);
+  pinMode(I_CH1, INPUT);
 
   digitalWrite(SW_ACC, LOW);
   
@@ -94,11 +100,12 @@ void setup()
   if(!accel.begin())
   {
     /* There was a problem detecting the ADXL345 ... check your connections */
-    Serial.println("Ooops, no LSM303 detected ... Check your wiring!");
+    Serial.println("Acc no detected!");
     while(1);
   }
    /* Enable auto-gain  Magnetometer*/
-  mag.enableAutoRange(true);
+  //mag.enableAutoRange(true);
+  set_sleep_mode(SLEEP_MODE_PWR_SAVE);
   ol_logevent(0);
 }
 
@@ -121,41 +128,47 @@ void loop() {
       Serial.print("   :");
       command(data);
       }
+      //Normal 
+
+      sequence();
+      myWatchdogEnable(8);
+      // Serial.println("sleep.");
+      delay(10);
+      sleep_mode();
     }
   
   if (logger)   //LOGGER
   {
     log_acc();
   }   
-  //state=1;
-  sequence();
+
 }
 
 
 float read_temp(int *val, int *frac){
    float temperature;
-  /*digitalWrite(SW_TOL, HIGH);
+  digitalWrite(SW_TOL, HIGH);
   digitalWrite(LED, HIGH);
-  Serial.print("TEMP ON \n");  //ZZZ delete
+  // Serial.print("TEMP ON \n");  //ZZZ delete
   delay(10);
-   Serial.print("begin tx \n");  //ZZZ delete
+   // Serial.print("begin tx \n");  //ZZZ delete
   Wire.beginTransmission(temp_add);
   // send configuration
-  Serial.print("send config \n");  //ZZZ delete
+  // Serial.print("send config \n");  //ZZZ delete
   Wire.write(0xAC);
   Wire.write(B00001111); // 12 bit resolution, pol, oneshot
   Wire.endTransmission();
   delay(10);
  
   // begin convert
-   Serial.print("begin convert \n");  //ZZZ delete
+   // Serial.print("begin convert \n");  //ZZZ delete
   Wire.beginTransmission(temp_add); 
   Wire.write(0x51);
   Wire.endTransmission(); 
   delay(20);
  
   // wait until converting is done
-   Serial.print("Wait for convertion \n");  //ZZZ delete
+   // Serial.print("Wait for convertion \n");  //ZZZ delete
   byte conf = 0;
   while ( conf & B1000000 != B10000000 ) {
     delay(20);
@@ -163,15 +176,15 @@ float read_temp(int *val, int *frac){
     Wire.write(0xAC); 
     Wire.endTransmission();
     conf = Wire.read();
-  }
+    }
 
-  Serial.print("Ask temperature \n");  //ZZZ delete
+  // Serial.print("Query temperature \n");  //ZZZ delete
   // ask for the temerature 
   Wire.beginTransmission(temp_add); 
   Wire.write(0xAA); 
   Wire.endTransmission();
 
-  Serial.print("Read bytes \n");  //ZZZ delete
+  // Serial.print("Read bytes \n");  //ZZZ delete
   // request 2 bytes
   Wire.requestFrom(temp_add, 2);
   // read first byte
@@ -188,41 +201,44 @@ float read_temp(int *val, int *frac){
   else
     temperature=(float)*frac/10;
   temperature+=(float)*val;
-  Serial.print("\n  Temperature float: ");
+  Serial.print("\n  Temp: ");
   Serial.println(temperature,3);
   *frac = 100 * (*frac & 0xF0 )/ 256;
   if ( *frac < 10 ) {
 
-  }
+    }
 
   Serial.print("\n");
 
   delay(50);
   digitalWrite(SW_TOL, HIGH);  //LOW
-  digitalWrite(LED, LOW); */
+  digitalWrite(LED, LOW); 
   return temperature;
 }
 
 void log_acc(){
-    delay(50);
-    sensors_event_t event_acc;
-    accel.getEvent(&event_acc);
-    sensors_event_t event_mag;
-    mag.getEvent(&event_mag);
-    //Serial.print("logging... \n");  //ZZZ delete
+    Serial.println("Not used");
+    // 
+    // Adafruit_LSM303_Mag_Unified mag = Adafruit_LSM303_Mag_Unified(12345);
+    // delay(50);
+    // sensors_event_t event_acc;
+    // accel.getEvent(&event_acc);
+    // sensors_event_t event_mag;
+    // mag.getEvent(&event_mag);
+    // //Serial.print("logging... \n");  //ZZZ delete
 
-    ol_serial.print(event_acc.acceleration.x);
-    ol_serial.print(";");
-    ol_serial.print(event_acc.acceleration.y);
-    ol_serial.print(";");
-    ol_serial.print(event_acc.acceleration.z);
-    ol_serial.print(";");
-    ol_serial.print(event_mag.magnetic.x);
-    ol_serial.print(";");
-    ol_serial.print(event_mag.magnetic.y);
-    ol_serial.print(";");
-    ol_serial.print(event_mag.magnetic.z);
-    ol_serial.println("");
+    // ol_serial.print(event_acc.acceleration.x);
+    // ol_serial.print(";");
+    // ol_serial.print(event_acc.acceleration.y);
+    // ol_serial.print(";");
+    // ol_serial.print(event_acc.acceleration.z);
+    // ol_serial.print(";");
+    // ol_serial.print(event_mag.magnetic.x);
+    // ol_serial.print(";");
+    // ol_serial.print(event_mag.magnetic.y);
+    // ol_serial.print(";");
+    // ol_serial.print(event_mag.magnetic.z);
+    // ol_serial.println("");
 }
 /// get_gps:
 //Read GPS for a second and 
@@ -232,8 +248,7 @@ void log_acc(){
 int get_gps(float *latitude, float *longitude)
 {
 	gps_serial.listen();
-	Serial.println("GPS Start");
-   extern bool gps_write;
+	// Serial.println("GPS Start");
    bool newData = false;
    int year;
    byte month, day, hour, minutes, second, hundredths;
@@ -244,32 +259,24 @@ int get_gps(float *latitude, float *longitude)
    {
      while (gps_serial.available())
      {
-	 char c = gps_serial.read();
-	  //delay(50);
-	  Serial.print(c); // uncomment this line if you want to see the GPS data flowing
-     if (gps.encode(c)) // Did a new valid sentence come in?
-     {
-      newData = true;
-      gps_thresh++;
-     }
-     }
+    	 char c = gps_serial.read();
+  	  //delay(50);
+  	  // Serial.print(c); // uncomment this line if you want to see the GPS data flowing
+       if (gps.encode(c)) // Did a new valid sentence come in?
+       {
+          unsigned long age;
+          gps.f_get_position(latitude, longitude, &age);
+          gps.crack_datetime(&year, &month, &day,
+          &hour, &minutes, &second, &hundredths, &fix_age);
+          setTime(hour,minutes,second,day,month,year);
+          setTime(now()+28800);
+          // Serial.println("GPS received");
+          return 1;
+       }
+     }  
    }
-   Serial.println("Timed out");
-
-   if (newData && gps_thresh>GPS_THRESHOLD) // threshold # of good sentences
-   {
-  unsigned long age;
-  gps.f_get_position(latitude, longitude, &age);
-  gps.crack_datetime(&year, &month, &day,
-  &hour, &minutes, &second, &hundredths, &fix_age);
-  setTime(hour,minutes,second,day,month,year);
-  setTime(now()+28800);
-  gps_thresh=0;
-  //Serial.println("Lat: %f %f",latitude,longitude);
-  Serial.println("GPS received");
-  return 1;
-   }
-return 0;
+    // Serial.println("Timed out");
+    return 0;
   
  }
 
@@ -279,9 +286,7 @@ int command(char data){
       digitalWrite(SW_ACC, !digitalRead(SW_ACC));
       Serial.print(digitalRead(SW_ACC),DEC);
       Serial.print("  ACC\n");
-      
-            
-      break;
+    break;
 
     case 't': 
       digitalWrite(SW_TOL, !digitalRead(SW_TOL));
@@ -319,8 +324,8 @@ int command(char data){
   break;
 
   case 'C':
-    if(digitalRead(SW_CAM))
-      {digitalWrite(SW_CAM, LOW);      Serial.print("  Camera off \n");}
+       digitalWrite(SW_CAM, LOW);      
+       Serial.print("  Camera off \n");
   break;
   
     case 'h':
@@ -360,52 +365,53 @@ int command(char data){
 
      case 'l':                                   //log
      state=100;
-     digitalWrite(SW_TOL, HIGH);
-     digitalWrite(SW_ACC, LOW);
-     delay(500);
-      Serial.print("  Logger: ");
-      Serial.print(!logger,DEC);
-      Serial.println("");
-      ol_serial.listen();
+     Serial.println("not used");
+    //  digitalWrite(SW_TOL, HIGH);
+    //  digitalWrite(SW_ACC, LOW);
+    //  delay(500);
+    //   Serial.print("  Logger: ");
+    //   Serial.print(!logger,DEC);
+    //   Serial.println("");
+    //   ol_serial.listen();
     
-    if (!logger){
-       for (int i=0; i<20 ; i++){
-         ol_serial.println("");
-         ol_serial.write(26);
-         ol_serial.write(26);
-         ol_serial.write(26);
-         ol_serial.println("");
-         if (ol_serial.available())
-        //Serial.println(ol_serial.read());
-          if(ol_serial.read()=='>')
-            {Serial.print(i, DEC); Serial.println(">"); break;}
-         }
-       delay(20);
-       int value = EEPROM.read(EEPROM_addrs);
-       EEPROM.write(EEPROM_addrs, value+1);
-       ol_serial.println("");
-       delay(10);
-       ol_serial.println("");
-       delay(10);
-       ol_serial.print("append mylog_");
-       if (value<10) ol_serial.print("0");
-       ol_serial.print(value,DEC);
-       ol_serial.println(".txt");
-       delay(10);
-    }else
-    {
-         ol_serial.write(26);
-         ol_serial.println("");
-         delay(10);
-    }
-        ol_serial.println("x (m/s^2);y (m/s^2);z (m/s^2);x (uT);y (uT);z (uT)");
+    // if (!logger){
+    //    for (int i=0; i<20 ; i++){
+    //      ol_serial.println("");
+    //      ol_serial.write(26);
+    //      ol_serial.write(26);
+    //      ol_serial.write(26);
+    //      ol_serial.println("");
+    //      if (ol_serial.available())
+    //     //Serial.println(ol_serial.read());
+    //       if(ol_serial.read()=='>')
+    //         {Serial.print(i, DEC); Serial.println(">"); break;}
+    //      }
+    //    delay(20);
+    //    int value = EEPROM.read(EEPROM_addrs);
+    //    EEPROM.write(EEPROM_addrs, value+1);
+    //    ol_serial.println("");
+    //    delay(10);
+    //    ol_serial.println("");
+    //    delay(10);
+    //    ol_serial.print("append mylog_");
+    //    if (value<10) ol_serial.print("0");
+    //    ol_serial.print(value,DEC);
+    //    ol_serial.println(".txt");
+    //    delay(10);
+    // }else
+    // {
+    //      ol_serial.write(26);
+    //      ol_serial.println("");
+    //      delay(10);
+    // }
+    //     ol_serial.println("x (m/s^2);y (m/s^2);z (m/s^2);x (uT);y (uT);z (uT)");
     logger=!logger;
      break;
 
-     case 'r':
-      EEPROM.write(EEPROM_addrs, 0);
-      Serial.print("  reset logger file to new01.txt\n");
-      break;
+     // case 'r':
+     //  EEPROM.write(EEPROM_addrs, 0);
+     //  Serial.print("  reset logger file to new01.txt\n");
+     //  break;
 
     case 13:
     break;
@@ -538,7 +544,7 @@ int ol_append(){
 //          //Serial.println(ol_serial.read());
 //          if(ol_serial.read()=='>' || ol_serial.read()=='<')
 //            {ol_status=0; Serial.println("Openlong back to CMD");}
-  /*if (ol_status!=2)
+  if (ol_status!=2)
   {
       ol_cmd();
       ol_serial.println("");
@@ -549,7 +555,7 @@ int ol_append(){
       Serial.println("Openlong ready");
       ol_status=2;
       return 1;
-  }*/
+  }
 }
 int ol_potbot_parameters(){
   int  par_index=0;  
@@ -612,12 +618,12 @@ int sequence(){
       temp2=now() + 60*parameters[1];    // camera time
       Serial.print("check deployment...");
       ol_logevent(3);
-      state++;
+      state=22;
     } 
     
     else if (now()>temp1)     //gps time
     {
-      ol_logevent(4);
+      ol_logevent(4);           // in water
       state++;        //to never got signal
     }
   break;
@@ -631,13 +637,15 @@ int sequence(){
       command('G'); //turn off gps
       temp1=now() + 60*parameters[2];   // set time for temperature
       Serial.print("In water... monitor temp");
-    state++;      // goto in water
+      state++;      // goto in water
     } 
     else if  (now()>temp1)     //potbot still in air after gps time
     {
+
+      Serial.print("false deployment...");
       command('G'); //turn off gps    //false deployment goto init
       command('C'); //turn off camera
-      Serial.print("false deployment...");
+      ol_logevent(99);  //False deployment
     state=0;
     }
     break;
@@ -645,7 +653,9 @@ int sequence(){
   case 4:         // in water
   int val,frac;
     if  (now()>temp2)     //turn off camera after camera time
+      {ol_logevent(88); //Turn off camera after time elapsed
       command('C');
+      temp2=now()+20*60*60;}
       
     if  (now()>temp1)     //read temperature every temp time
     {
@@ -662,6 +672,7 @@ int sequence(){
       command('g'); //turn on gps    
       command('c'); //turn on camera
       Serial.print("check pulled?...");
+      ol_logevent(7);
     state++;  
     }
     break;
@@ -670,18 +681,10 @@ int sequence(){
     if (get_gps(&latitude, &longitude))
     {
       command('C'); //turn off camera
-      get_gps(&latitude, &longitude);   // store 3rd value
-      get_gps(&latitude, &longitude);
-
-      ol_append();
-      ol_timestamp();
-      ol_serial.print("pulled;");
-      ol_serial.print(latitude,6);
-      ol_serial.print(';');
-      ol_serial.print(longitude,6);
-      ol_serial.println("");
+      get_gps(&latitude, &longitude);  
+      ol_logevent(8);
       
-      temp1=now() + 60*30;   // set new time for transition 30'
+      temp1=now() + 60;   // set new time for transition 30'
       Serial.print("transition to air test...");
     state++;          // go to transition
     } 
@@ -689,6 +692,8 @@ int sequence(){
     if (now()>temp1)        //check gps time
     { Serial.println("false pulled");    //false pulled
       command('G');                // turn off gps
+      command('C'); //turn off camera
+      ol_logevent(9);   //False pulled 
       state =4;       // go to in water 
     } 
   break;
@@ -698,25 +703,22 @@ int sequence(){
     {state=4; Serial.println("false pulled from transition");}  // false pulled from transition
     else
       if (now()>temp1)
-        {state=0; Serial.println("pulled confirmed, in air...");   // go to in air
+        {      ol_logevent(10);state=0; Serial.println("pulled confirmed, in air...");   // go to in air
         command('G');
       }  
   break;  
   
   case 10:
     temp1=now()+20;
-    digitalWrite(SW_CAM,HIGH);
-    Serial.println("camera on...");
+    command('c');
     state++;
   break;
 
-  case 20:
+  case 22:
     
     if (now()>temp1) 
     {
-      Serial.println("camera off...");
-      digitalWrite(SW_CAM,LOW); 
-      state=0;
+      state=3;
     }
   break;
 
@@ -746,7 +748,7 @@ int get_acc_threshold(bool serial_print){
     acc_avg[1]=accel.raw.y + ACC_OFFSET;
     acc_avg[2]=accel.raw.z + ACC_OFFSET;
 
-  for (unsigned long start = millis(); millis() - start < 5000;)   //check for 5 seconds
+  for (unsigned long start = millis(); millis() - start < 1000;)   //check for 1 seconds
   {
     if ((int)acc_flag[0]+ (int)acc_flag[1]+ (int)acc_flag[2]>=2) {Serial.println("\n Accelerometer threshold passed"); return 1;}
     for (int i=0; i<3;i++)
@@ -783,4 +785,43 @@ int get_acc_threshold(bool serial_print){
 }
 
 
+ISR(WDT_vect) {
+ cli();
+ wdt_disable();
+ setTime(now()+1); // corect time
+ // Serial.println("wakeup!");
+ sei();
+}
 
+
+void myWatchdogEnable(int select_time) {  // turn on watchdog timer; interrupt mode every 2.0s
+//   cli();
+//   MCUSR = 0;
+//    // WDTCSR    // 4 last bits 1001-->8s, 1000->4s, 0111->2s, ,  0110-> 1s
+//   switch (select_time)
+//   {
+//     case 8: 
+//       WDTCSR = B00011001;     
+//       WDTCSR = B01001001;  
+//       Serial.println("W8")   ;
+//       break;
+//     case 4: 
+//       WDTCSR = B00011000;     
+//       WDTCSR = B01001000;     
+//       break;
+//     case 2: 
+//       WDTCSR = B00010111;     
+//       WDTCSR = B01000111;     
+//       break;
+//     case 1: 
+//       WDTCSR = B00010110;     
+//       WDTCSR = B01000110;     
+//       Serial.println("W1")   ;
+//       break;
+//   }
+  
+// sei();
+   MCUSR = 0;
+  WDTCSR |= B00011000;     
+  WDTCSR =  B01000110;     //1s
+}
